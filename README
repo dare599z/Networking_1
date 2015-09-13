@@ -1,0 +1,59 @@
+Justin McBride
+HTTP Server
+
+GENERAL NOTES
+-------------
+a. I make use of two libraries:
+  1. Libevent (discussed under Requirements)
+  2. easylogging++ (easyloggingpp.h)
+    This is a logging library to output information at various
+    levels to the console. It supports color-coded output and
+    runtime enabling of different logging levels. By default,
+    only select information is printed out, but running the 
+    server with the -v flag will enable verbose logging.
+
+b. The app by default looks for "ws.conf" in the main directory,
+   but this can be modified with the -c option.
+
+REQUIREMENTS
+------------
+My assignment uses the C library known as Libevent to handle multiple sockets
+and all the connections between them. It handles the implmenetation of creating
+and binding the sockets, as well as reading and writing to them. I receive a
+callback everytime a socket is ready to be read from, and then parse the requests
+and handle them appropriately.
+
+To download Libevent, on a Ubuntu/Debian machine, execute
+$ sudo apt-get install libevent-dev
+
+Additionally, the code compiles only under C++11.
+
+BUILDING
+--------
+g++ --std=c++11 -o http_server_mcbride McBride_Server.cpp -levent
+
+RUNNING
+-------
+http_server_mcbride [-c config_file] [-v] [--v={1-9}]
+
+The verbosity level of logs is selectable with the v command
+options above. 
+
+By default, verbose logging is not enabled. The messages printed
+out then are only for served pages and HTTP errors, as well as
+any general errors.
+
+With level 1 logging, basic HTTP request information is also
+printed out.
+
+With level 2, the connection information is also printed out,
+such as when connections are opened and closed, and why.
+
+With level 3, all headers of HTTP requests are also printed.
+
+The '-v' option enables maximum verbosity.
+
+
+
+
+

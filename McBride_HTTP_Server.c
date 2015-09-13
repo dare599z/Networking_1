@@ -1,4 +1,4 @@
-
+`
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -71,6 +71,10 @@ main(int argc, char *argv[])
           strerror(errno));
       FD_SET(ssock, &afds);
     }
+
+    char* ok = "HTTP/1.1 200 OK";
+    write(fd, ok, strlen(ok));
+
     for (fd=0; fd<nfds; ++fd)
       if (fd != msock && FD_ISSET(fd, &rfds))
         if (parseRequest(fd) == 0) {
@@ -107,7 +111,7 @@ parseRequest(int fd)
   if (cc) {
     // have data
 
-    int read = sscanf(buf, "%s %s %s", method, uri, version);
+    int readBytes = sscanf(buf, "%s %s %s", method, uri, version);
 
     if ( read != 3 ) {
       char* bad = "bad";
@@ -170,7 +174,7 @@ passivesock(const char *portnum, int qlen)
   int     s;              /* socket descriptor             */
 
   memset(&sin, 0, sizeof(sin));
-  sin.sin_family = AF_INET;
+  sin.sin_family = AF_INET; 
   sin.sin_addr.s_addr = INADDR_ANY;
 
 /* Map port number (char string) to port number (int) */
