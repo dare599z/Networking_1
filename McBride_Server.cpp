@@ -324,7 +324,7 @@ callback_event(bufferevent *event, short events, void *context)
   }
   if ( events & ( BEV_EVENT_EOF | BEV_EVENT_ERROR ) )
   {
-    VLOG(2) << ci->port_s() << "Closing (EOF)";
+    VLOG(1) << ci->port_s() << "Closing (EOF)";
     bufferevent_free(event);
   }
 }
@@ -333,7 +333,7 @@ void
 callback_timeout(evutil_socket_t fd, short what, void* context)
 {
   connection_info* ci = reinterpret_cast<connection_info*>(context);
-  VLOG(2) << ci->port_s() << "Closing (TIMEOUT)";
+  VLOG(1) << ci->port_s() << "Closing (TIMEOUT)";
   bufferevent_free( ci->bev );
 }
 
@@ -341,7 +341,7 @@ void
 callback_data_written(bufferevent *bev, void *context)
 {
   connection_info *ci = reinterpret_cast<connection_info*>(context);
-  VLOG(2) << ci->port_s() << "Closing (WRITEOUT)";
+  VLOG(1) << ci->port_s() << "Closing (WRITEOUT)";
   bufferevent_free(bev);
 }
 
@@ -390,7 +390,7 @@ callback_read(bufferevent *ev, void *context)
         LOG(WARNING) << ci->port_s() << "\t[" << line << "]";
         goto request_error;
       }
-      VLOG(1) << ci->port_s() << "req.method= " << req.method;
+      VLOG(2) << ci->port_s() << "req.method= " << req.method;
 
       // Parse out the uri
       std::string uri;
@@ -400,7 +400,7 @@ callback_read(bufferevent *ev, void *context)
         goto request_error;
       }
       req.uri_set(uri);
-      VLOG(1) << ci->port_s() << "req.uri= " << req.uri() << " [" << req.full_uri() << "]";
+      VLOG(2) << ci->port_s() << "req.uri= " << req.uri() << " [" << req.full_uri() << "]";
 
       // Parse out the http version
       if ( !(ss>>req.http_version) ) {
@@ -408,7 +408,7 @@ callback_read(bufferevent *ev, void *context)
         LOG(WARNING) << ci->port_s() << "\t[" << line << "]";
         goto request_error;
       }
-      VLOG(1) << ci->port_s() << "req.http_version= " << req.http_version;
+      VLOG(2) << ci->port_s() << "req.http_version= " << req.http_version;
       if (!(req.http_version.compare("HTTP/1.0") == 0) && !(req.http_version.compare("HTTP/1.1") == 0)) {
         error_string = "Invalid HTTP-Version: " + req.http_version;
         goto bad_method;
@@ -425,15 +425,15 @@ callback_read(bufferevent *ev, void *context)
           {
             std::string f(sc.file_root());
             f += *it;
-            VLOG(1) << ci->port_s() << "Root file exists? [" << f << "]";
+            VLOG(2) << ci->port_s() << "Root file exists? [" << f << "]";
             if ( file_exists(f) ) {
-              VLOG(1) << ci->port_s() << ".....true";
+              VLOG(2) << ci->port_s() << ".....true";
               req.uri_set(*it);
               rootFound = true;
               break;
             }
             else {
-              VLOG(1) << ci->port_s() << ".....false";
+              VLOG(2) << ci->port_s() << ".....false";
             }
           }
           if ( !rootFound )
@@ -488,7 +488,7 @@ callback_read(bufferevent *ev, void *context)
     fstat(fd, &fd_stat); // get the file size that we're sending to the buffer
 
     std::string extension = file_extension(req.uri());
-    VLOG(1) << ci->port_s() << "Requested extension: " << extension;
+    VLOG(2) << ci->port_s() << "Requested extension: " << extension;
     std::map<std::string, std::string>::iterator it = sc.m_file_types.find(extension);
     if ( it == sc.m_file_types.end() )
     {

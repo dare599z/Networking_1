@@ -15,6 +15,11 @@ a. I make use of two libraries:
 b. The app by default looks for "ws.conf" in the main directory,
    but this can be modified with the -c option.
 
+c. I also included a test site that I made to test many simultaneous
+   connections at once, under the www-Many/ directory. It has 50 images
+   that need to be fetched individually. Under my testing, both Chrome
+   and Firefox would only open 6 connections each.
+
 REQUIREMENTS
 ------------
 My assignment uses the C library known as Libevent to handle multiple sockets
@@ -43,15 +48,16 @@ By default, verbose logging is not enabled. The messages printed
 out then are only for served pages and HTTP errors, as well as
 any general errors.
 
-With level 1 logging, basic HTTP request information is also
-printed out.
+With level 1 verbose logging, basic HTTP request information is printed out,
+as well as when connections are opened and closed, and why. The configuration
+file processing will be printed out as well.
 
-With level 2, the connection information is also printed out,
-such as when connections are opened and closed, and why.
+With level 2, more detailed HTTP request parsing is also printed out,
+and other processing.
 
 With level 3, all headers of HTTP requests are also printed.
 
-The '-v' option enables maximum verbosity.
+The lone '-v' option enables maximum verbosity.
 
 
 
