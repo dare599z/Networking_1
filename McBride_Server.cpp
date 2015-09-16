@@ -14,6 +14,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <string>
 #include <vector>
 #include <map>
@@ -32,11 +33,10 @@ INITIALIZE_EASYLOGGINGPP
 const char* METHOD_GET = "GET";
 const char* URI_ROOT = "/";
 
-const static std::string e500 = "HTTP/1.1 500 Internal Server Error: cannot allocate memory\n";
-
-std::string Make400(const std::string &req)
+std::string Make400(const std::string &problem, const std::string &req)
 {
   std::string es("HTTP/1.1 400 Bad Request: ");
+  es += problem;
   es += req;
   es += "\n";
   return es;
@@ -48,6 +48,11 @@ std::string Make404(const std::string &file)
   es += file;
   es += "\n";
   return es;
+}
+
+std::string Make500()
+{
+  return std::string("HTTP/1.1 500 Internal Server Error: cannot allocate memory\n");
 }
 
 std::string Make501(const std::string &file)
@@ -77,7 +82,7 @@ struct connection_info
   std::string 
   port_s() const {
     std::ostringstream ss;
-    ss << "[" << port << "]: ";
+    ss << "[" << std::setfill('0') << std::setw(2) << port << "]: ";
     return ss.str();
   }
 };
@@ -217,6 +222,11 @@ public:
     return m_full_uri;
   }
 
+  bool keepAlive() {
+    if (other_attrs["Connection"].compare("keep-alive") == 0) return true;
+    else false;
+  }
+
   bool isValid;
   std::string error_string;
   std::string method;
@@ -301,29 +311,25 @@ CreateRequests(bufferevent *ev, connection_info *ci)
 {
   evbuffer *input = bufferevent_get_input(ev);
 
-  VLOG(9) << "[[" << __LINE__ << "]]: " << "Creating Requests";
+  VLOG(9) << "[[" << __LINE__ << "]]: " << "Parsing requests into http_requests";
   std::vector<http_request> requests;
   http_request req;
 
-// VLOG(9) << "[[" << __LINE__ << "]]: " << 
 
   for (int i = 1; ; ++i)
   {
-    VLOG(9) << "[[" << __LINE__ << "]]: " << "i = " << i;
     size_t n;
     char *line = evbuffer_readln(input, &n, EVBUFFER_EOL_CRLF);
     
     if ( !line ) {
       if ( i == 1 ) {
-        LOG(ERROR) << "Processed all requests that we can see..";
+        VLOG(3) << "Total pipelined requests: " << requests.size();
         return requests;
       }
-      LOG(WARNING) << "[[" << __LINE__ << "]]: don't know why we're here";
-      break;
+      VLOG(3) << "Middle of parsing request, blank line.";
+      goto begin_next;
     }
-    VLOG(9) << "[[" << __LINE__ << "]]: " << "line= " << line;
     if ( i == 1 ) {
-      VLOG(9) << "[[" << __LINE__ << "]]: " << "in i==1";
       // First line of HTTP Request...
       // Should have METHOD URI HTTP_VERSION
       std::istringstream ss(line);
@@ -333,6 +339,7 @@ CreateRequests(bufferevent *ev, connection_info *ci)
         LOG(WARNING) << ci->port_s() << "Unable to parse HTTP Method.";
         LOG(WARNING) << ci->port_s() << "\t[" << line << "]";
         req.isValid = false;
+        req.error_string = "Unable to parse HTTP Method.";
         goto begin_next;
       }
       VLOG(2) << ci->port_s() << "req.method= " << req.method;
@@ -343,7 +350,7 @@ CreateRequests(bufferevent *ev, connection_info *ci)
         LOG(WARNING) << ci->port_s() << "Unable to parse HTTP URI.";
         LOG(WARNING) << ci->port_s() << "\t[" << line << "]";
         req.isValid = false;
-        // req.error_string = something;
+        req.error_string = "Unable to parse HTTP URI.";
         goto begin_next;
       }
       req.uri_set(uri);
@@ -354,16 +361,10 @@ CreateRequests(bufferevent *ev, connection_info *ci)
         LOG(WARNING) << ci->port_s() << "Unable to parse HTTP Version.";
         LOG(WARNING) << ci->port_s() << "\t[" << line << "]";
         req.isValid = false;
-        // req.error_string = something;
+        req.error_string = "Unable to parse HTTP Version.";
         goto begin_next;
       }
       VLOG(2) << ci->port_s() << "req.http_version= " << req.http_version;
-      if (!(req.http_version.compare("HTTP/1.0") == 0) && !(req.http_version.compare("HTTP/1.1") == 0)) {
-        req.error_string = "Invalid HTTP-Version: " + req.http_version;
-        req.isValid = false;
-        // req.error_string = something;
-        goto begin_next;
-      }
     }
     else {
       // We need to try and see if the client is pipelining
@@ -386,6 +387,9 @@ CreateRequests(bufferevent *ev, connection_info *ci)
       continue;
     }
     continue;
+
+    // This begin_next goto statement happens when a request is followed
+    // up with a blankline
     begin_next:
       VLOG(9) << "[[" << __LINE__ << "]]: " << "starting new request";
       requests.push_back(req);
@@ -448,10 +452,21 @@ callback_event(bufferevent *event, short events, void *context)
   {
     LOG(ERROR) << ci->port_s() << "Error in the bufferevent";
   }
-  if ( events & ( BEV_EVENT_EOF | BEV_EVENT_ERROR ) )
+  if ( events & (BEV_EVENT_READING|BEV_EVENT_ERROR) )
   {
-    VLOG(1) << ci->port_s() << " NOT Closing (EOF)";
-    // bufferevent_free(event);
+    LOG(ERROR) << ci->port_s() << "Bufferevent reading error";
+  }
+    if ( events & (BEV_EVENT_READING|BEV_EVENT_EOF) )
+  {
+    LOG(ERROR) << ci->port_s() << "Bufferevent reading EOF";
+  }
+  if ( events & (BEV_EVENT_WRITING|BEV_EVENT_ERROR) )
+  {
+    LOG(ERROR) << ci->port_s() << "Bufferevent writing error";
+  }
+  if ( events & (BEV_EVENT_WRITING|BEV_EVENT_EOF) )
+  {
+    LOG(ERROR) << ci->port_s() << "Bufferevent writing EOF";
   }
 }
 
@@ -482,6 +497,7 @@ callback_read(bufferevent *ev, void *context)
   evbuffer *output = bufferevent_get_output(ev);
 
   std::string error_string;
+  bool keepAlive = false;
 
   /*
     Go create any HTTP requests that may have been
@@ -507,98 +523,118 @@ callback_read(bufferevent *ev, void *context)
       LOG(ERROR) << "Request not valid.";
     }
 
-    if (req.method.compare(METHOD_GET) == 0)
-      {
-        if ( req.uri().compare(URI_ROOT) == 0 )
-        {
-          VLOG(1) << ci->port_s() << "Client requested the root page";
-          std::vector<std::string> indicies = sc.indicies();
-          bool rootFound = false;
-          for (std::vector<std::string>::iterator it = indicies.begin(); it != indicies.end(); ++it)
-          {
-            std::string f(sc.file_root());
-            f += *it;
-            VLOG(2) << ci->port_s() << "Root file exists? [" << f << "]";
-            if ( file_exists(f) ) {
-              VLOG(2) << ci->port_s() << ".....true";
-              req.uri_set(*it);
-              rootFound = true;
-              break;
-            }
-            else {
-              VLOG(2) << ci->port_s() << ".....false";
-            }
-          }
-          if ( !rootFound )
-          {
-            std::string e = Make404(req.uri());
-            LOG(WARNING) << ci->port_s() << "<404>: " << error_string;
-            bufferevent_write( ev, e.c_str(), e.length() );
-            continue;
-          }
-        }
-        else
-        {
-          if ( !file_exists(req.full_uri()) ) {
-            std::string e = Make404(req.uri());
-            LOG(WARNING) << ci->port_s() << "<404>: " << error_string;
-            bufferevent_write( ev, e.c_str(), e.length() );
-            continue;
-          }
-        }
+    if ( !(req.http_version.compare("HTTP/1.0") == 0) && !(req.http_version.compare("HTTP/1.1") == 0) ) {
+      std::string e = Make400("Invalid HTTP-Version: ", req.http_version);
+      LOG(WARNING) << ci->port_s() << "<400>: " << e;
+      bufferevent_write( ev, e.c_str(), e.length() );
+      continue;
+    }
 
-        int fd = open( req.full_uri().c_str(), O_RDONLY );
-        if ( fd < 0 ) {
-          LOG(WARNING) << ci->port_s() << "<500> Couldn't open file." << req.full_uri();
-          bufferevent_write( ev, e500.c_str(), e500.length() );
+    if (req.method.compare(METHOD_GET) == 0)
+    {
+      if ( req.uri().compare(URI_ROOT) == 0 )
+      {
+        VLOG(1) << ci->port_s() << "Client requested the root page";
+        std::vector<std::string> indicies = sc.indicies();
+        bool rootFound = false;
+        for (std::vector<std::string>::iterator it = indicies.begin(); it != indicies.end(); ++it)
+        {
+          std::string f(sc.file_root());
+          f += *it;
+
+          VLOG(2) << ci->port_s() << "Root file exists? [" << f << "]";
+          if ( file_exists(f) ) {
+            VLOG(2) << ci->port_s() << ".....true";
+            req.uri_set(*it);
+            rootFound = true;
+            break;
+          }
+          else {
+            VLOG(2) << ci->port_s() << ".....false";
+          }
+        }
+        if ( !rootFound )
+        {
+          std::string e = Make404(req.uri());
+          LOG(WARNING) << ci->port_s() << "<404>: " << req.uri();
+          bufferevent_write( ev, e.c_str(), e.length() );
+          if ( req.keepAlive() ) keepAlive = true;
           continue;
         }
-        struct stat fd_stat;
-        fstat(fd, &fd_stat); // get the file size that we're sending to the buffer
-
-        std::string extension = file_extension(req.uri());
-        VLOG(2) << ci->port_s() << "Requested extension: " << extension;
-        std::map<std::string, std::string>::iterator it = sc.m_file_types.find(extension);
-        if ( it == sc.m_file_types.end() )
-        {
-          // file type not allowed by config file
-          std::string e = Make501(req.uri());
-          
-          LOG(WARNING) << ci->port_s() << "<501>: " << error_string;
+      }
+      else
+      {
+        if ( !file_exists(req.full_uri()) ) {
+          std::string e = Make404(req.uri());
+          LOG(WARNING) << ci->port_s() << "<404>: " << req.uri();
           bufferevent_write( ev, e.c_str(), e.length() );
           continue;
         }
+      }
 
-        bool keepAlive;
-        if (req.other_attrs["Connection"].compare("keep-alive") == 0) keepAlive = true;
-        else keepAlive = false;
-        std::string header = MakeSuccessHeader(it->second, fd_stat.st_size, req.other_attrs);
-
-        evbuffer_add(output, header.c_str(), header.length() );
-        evbuffer_add_file(output, fd, 0, fd_stat.st_size);
-        if (req.other_attrs["Connection"].compare("keep-alive") == 0)
-        {
-          LOG(INFO) << ci->port_s() << "Serving file: " << req.uri() << " ~ (KEEP-ALIVE)";
-          event_add(ci->timeout_event, &tenSeconds);
-        }
-        else
-        {
-          LOG(INFO) << ci->port_s() << "Serving file: " << req.uri() << " ~ (CLOSE)";
-          bufferevent_setcb(ev, callback_read, callback_data_written, callback_event, (void*)ci);
-        }
+      int fd = open( req.full_uri().c_str(), O_RDONLY );
+      if ( fd < 0 ) {
+        std::string e = Make500();
+        LOG(WARNING) << ci->port_s() << "<500> Couldn't open file." << req.full_uri();
+        bufferevent_write( ev, e.c_str(), e.length() );
+        if ( req.keepAlive() ) keepAlive = true;
         continue;
-      } // GET method
+      }
+      struct stat fd_stat;
+      fstat(fd, &fd_stat); // get the file size that we're sending to the buffer
+
+      std::string extension = file_extension(req.uri());
+      VLOG(2) << ci->port_s() << "Requested extension: " << extension;
+      std::map<std::string, std::string>::iterator f_it = sc.m_file_types.find(extension);
+      if ( f_it == sc.m_file_types.end() )
+      {
+        // file type not allowed by config file
+        std::string e = Make501(req.uri());
+        
+        LOG(WARNING) << ci->port_s() << "<501>: " << "File type restricted.. Requested: " << extension;
+        bufferevent_write( ev, e.c_str(), e.length() );
+        if ( req.keepAlive() ) keepAlive = true;
+        continue;
+      }
+
+      std::string header = MakeSuccessHeader(f_it->second, fd_stat.st_size, req.other_attrs);
+
+      evbuffer_add(output, header.c_str(), header.length() );
+      evbuffer_add_file(output, fd, 0, fd_stat.st_size);
+      const char* newLine = "\n";
+      evbuffer_add(output, newLine, strlen(newLine));
+      if ( req.keepAlive() )
+      {
+        LOG(INFO) << ci->port_s() << "<200>: " << req.uri() << " ~ (KEEP-ALIVE)";
+        keepAlive = true;
+      }
       else
       {
-        /*
-          at this point, we only implement the GET method
-          and the code should never get here, but who knows..
-          crazier stuff has happened
-        */
-
-        LOG(ERROR) << ci->port_s() << "Something went wrong... shouldn't have accepted this non-GET parameter..";
-        bufferevent_free(ev); // just close the connection
+        LOG(INFO) << ci->port_s() << "<200>: " << req.uri() << " ~ (CLOSE)";
+        keepAlive = false;
       }
+    } // GET method
+    else {
+      std::string e = Make400("Invalid Method: ", req.method);
+      LOG(WARNING) << "<400>: Invalid Method: " << req.method;
+      bufferevent_write( ev, e.c_str(), e.length() );
+      if ( req.keepAlive() ) keepAlive = true;
+      continue;
+    }
+  }
+
+  // After we have processed and responded to all of the requests,
+  // we need to figure out what to do with the connection..
+
+  if (keepAlive)
+  {
+    VLOG(3) << ci->port_s() << "Keep-alive = true";
+    event_add(ci->timeout_event, &tenSeconds);
+  }
+  else
+  {
+    VLOG(3) << ci->port_s() << "Keep-alive = false";
+    bufferevent_setcb(ev, callback_read, callback_data_written, callback_event, (void*)ci);
   }
 }
 
@@ -615,7 +651,8 @@ callback_accept_connection(
   event_base *base = evconnlistener_get_base(listener);
   bufferevent *bev = bufferevent_socket_new(base,
                                             newSocket,
-                                            BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
+                                            BEV_OPT_CLOSE_ON_FREE);
+                                            // BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
 
   connection_info *ci = new connection_info();
   event *e = event_new(base, -1, EV_TIMEOUT, callback_timeout, (void*)ci);
