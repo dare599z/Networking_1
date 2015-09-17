@@ -1,6 +1,7 @@
 #include <event2/listener.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
+#include <event2/util.h>
 
 #include <arpa/inet.h>
 #include <string.h>
@@ -9,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <ctime>
 
 #include <iostream>
@@ -21,6 +23,8 @@
 
 #include "easylogging++.h"
 INITIALIZE_EASYLOGGINGPP
+
+#define NDEBUG
 
 /********************************
 *
@@ -224,7 +228,7 @@ public:
 
   bool keepAlive() {
     if (other_attrs["Connection"].compare("keep-alive") == 0) return true;
-    else false;
+    else return false;
   }
 
   bool isValid;
@@ -265,7 +269,7 @@ file_extension(const std::string& filename)
 
 bool
 file_exists(const std::string& name) {
-  struct stat buffer;   
+  struct stat buffer;
   return (stat (name.c_str(), &buffer) == 0); 
 }
 
@@ -311,10 +315,8 @@ CreateRequests(bufferevent *ev, connection_info *ci)
 {
   evbuffer *input = bufferevent_get_input(ev);
 
-  VLOG(9) << "[[" << __LINE__ << "]]: " << "Parsing requests into http_requests";
   std::vector<http_request> requests;
   http_request req;
-
 
   for (int i = 1; ; ++i)
   {
@@ -391,7 +393,7 @@ CreateRequests(bufferevent *ev, connection_info *ci)
     // This begin_next goto statement happens when a request is followed
     // up with a blankline
     begin_next:
-      VLOG(9) << "[[" << __LINE__ << "]]: " << "starting new request";
+      LOG(DEBUG) << "[[" << __LINE__ << "]]: " << "starting new request";
       requests.push_back(req);
       req = http_request();
       i=0;
@@ -444,29 +446,24 @@ MakeSuccessHeader(
 ********************************/
 
 void
+close_connection(connection_info* ci)
+{
+  LOG(DEBUG) << ci->port_s() << "Closing connection";
+  bufferevent_free(ci->bev);
+  event_del( ci->timeout_event );
+  free(ci);
+}
+
+void
 callback_event(bufferevent *event, short events, void *context)
 {
   connection_info* ci = reinterpret_cast<connection_info*>(context);
 
-  if ( events & BEV_EVENT_ERROR )
+  if ( (events & BEV_EVENT_EOF) )
   {
-    LOG(ERROR) << ci->port_s() << "Error in the bufferevent";
-  }
-  if ( events & (BEV_EVENT_READING|BEV_EVENT_ERROR) )
-  {
-    LOG(ERROR) << ci->port_s() << "Bufferevent reading error";
-  }
-    if ( events & (BEV_EVENT_READING|BEV_EVENT_EOF) )
-  {
-    LOG(ERROR) << ci->port_s() << "Bufferevent reading EOF";
-  }
-  if ( events & (BEV_EVENT_WRITING|BEV_EVENT_ERROR) )
-  {
-    LOG(ERROR) << ci->port_s() << "Bufferevent writing error";
-  }
-  if ( events & (BEV_EVENT_WRITING|BEV_EVENT_EOF) )
-  {
-    LOG(ERROR) << ci->port_s() << "Bufferevent writing EOF";
+    LOG(WARNING) << ci->port_s() << "Closing (CLIENT EOF)";
+    close_connection(ci);
+    return;
   }
 }
 
@@ -475,7 +472,7 @@ callback_timeout(evutil_socket_t fd, short what, void* context)
 {
   connection_info* ci = reinterpret_cast<connection_info*>(context);
   VLOG(1) << ci->port_s() << "Closing (TIMEOUT)";
-  bufferevent_free( ci->bev );
+  close_connection(ci);
 }
 
 void
@@ -483,7 +480,7 @@ callback_data_written(bufferevent *bev, void *context)
 {
   connection_info *ci = reinterpret_cast<connection_info*>(context);
   VLOG(1) << ci->port_s() << "Closing (WRITEOUT)";
-  bufferevent_free(bev);
+  close_connection(ci);
 }
 
 void
@@ -495,8 +492,6 @@ callback_read(bufferevent *ev, void *context)
 
   evbuffer *input = bufferevent_get_input(ev);
   evbuffer *output = bufferevent_get_output(ev);
-
-  std::string error_string;
   bool keepAlive = false;
 
   /*
@@ -507,16 +502,11 @@ callback_read(bufferevent *ev, void *context)
 
   std::vector<http_request> requests = CreateRequests(ev, ci);
 
-  if (requests.size() == 0)
-  {
-    LOG(WARNING) << ci->port_s() << "No input received.. Closing";
-    bufferevent_free(ev);
-  }
-
-  VLOG(9) << "number of requests to service= " << requests.size();
+  LOG(DEBUG) << "number of requests to service= " << requests.size();
+  
   for ( auto it = requests.begin(); it != requests.end(); ++it )
   {
-    VLOG(9) << "Servicing request.. ";
+    LOG(DEBUG) << "Servicing request.. ";
     http_request &req = *it;
 
     if ( !req.isValid ) {
@@ -603,6 +593,7 @@ callback_read(bufferevent *ev, void *context)
       evbuffer_add_file(output, fd, 0, fd_stat.st_size);
       const char* newLine = "\n";
       evbuffer_add(output, newLine, strlen(newLine));
+      
       if ( req.keepAlive() )
       {
         LOG(INFO) << ci->port_s() << "<200>: " << req.uri() << " ~ (KEEP-ALIVE)";
@@ -625,7 +616,7 @@ callback_read(bufferevent *ev, void *context)
 
   // After we have processed and responded to all of the requests,
   // we need to figure out what to do with the connection..
-
+  // bufferevent_free(ev);
   if (keepAlive)
   {
     VLOG(3) << ci->port_s() << "Keep-alive = true";
@@ -651,8 +642,7 @@ callback_accept_connection(
   event_base *base = evconnlistener_get_base(listener);
   bufferevent *bev = bufferevent_socket_new(base,
                                             newSocket,
-                                            BEV_OPT_CLOSE_ON_FREE);
-                                            // BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
+                                            BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
 
   connection_info *ci = new connection_info();
   event *e = event_new(base, -1, EV_TIMEOUT, callback_timeout, (void*)ci);
@@ -735,4 +725,3 @@ main(const int argc, const char** argv)
 
   return 0;
 }
-
