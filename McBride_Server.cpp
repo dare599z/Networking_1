@@ -3,6 +3,8 @@
 #include <event2/bufferevent.h>
 #include <event2/util.h>
 
+#include <thread>
+
 #include <arpa/inet.h>
 #include <string.h>
 #include <stdlib.h>
@@ -21,11 +23,10 @@
 #include <vector>
 #include <map>
 
+#include "class_HTTP_Server.h"
+
 #include "easylogging++.h"
 INITIALIZE_EASYLOGGINGPP
-
-#define NDEBUG
-#undef _DEBUG
 
 /********************************
 *
@@ -83,6 +84,7 @@ struct connection_info
   int port;
   bufferevent *bev;
   event* timeout_event;
+  HTTP_Server *server;
 
   std::string 
   port_s() const {
@@ -92,121 +94,10 @@ struct connection_info
   }
 };
 
-class ServerConf {
-public:
-  ServerConf() :
-    m_indices()
-  {}
-
-  
-  bool
-  ParseConfFile(const std::string& filename)
-  {
-    std::ifstream file;
-    file.open(filename);
-    if ( !file.is_open() )
-    {
-      LOG(FATAL) << "Error opening file.. : " << filename;
-      return false;
-    }
-
-    std::string line;
-    while ( getline(file, line) )
-    {
-
-      if (line.at(0) == '#') continue;
-      std::istringstream ss(line);
-
-      std::string first;
-      if ( !( ss >> first ) ) {
-        LOG(ERROR) << "Config file error on line [" << line << "]";
-        continue;
-      }
-
-      if ( first.compare("Listen") == 0 )
-      {
-        if ( !(ss >> m_port) ) {
-          LOG(FATAL) << "Need Listen <int>";
-          return false;
-        }
-        LOG(INFO) << "Server port: " << m_port;
-      }
-      else if ( first.compare("DocumentRoot") == 0 )
-      {
-        if ( !(ss >> m_root) ) {
-          LOG(FATAL) << "Need DocumentRoot <string>";
-          return false;
-        }
-        // sanitize the dir of quotes
-        m_root.erase(std::remove(m_root.begin(), m_root.end(), '\"'), m_root.end());
-        LOG(INFO) << "Document root: " << m_root;
-      }
-      else if ( first.compare("DirectoryIndex") == 0 )
-      {
-        std::string index;
-        if ( !(ss >> index) ) {
-          LOG(FATAL) << "Need DirectoryIndex <string> [<string ...]";
-          return false;
-        }
-        m_indices.push_back(index);
-        while ( ss >> index ) {
-          m_indices.push_back(index);
-        }
-
-        VLOG(1) << "Using directory indices:";
-        for (std::vector<std::string>::iterator it = m_indices.begin(); it != m_indices.end(); ++it)
-        {
-          VLOG(1) << "\t" << *it;
-        }
-      }
-      else if ( first.at(0) == '.' )
-      {
-        std::string ct;
-        if ( !(ss>> ct) )
-        {
-          LOG(ERROR) << "Need \".extension Content-Type\"";
-          LOG(ERROR) << "\t\t[" << line << "]";
-          continue;
-        }
-        m_file_types[first] = ct;
-      }
-    }
-
-    for (std::map<std::string, std::string>::iterator it = m_file_types.begin(); it != m_file_types.end(); ++it)
-    {
-      VLOG(1) << "Allowed: " << it->first << " (" << it->second << ")";
-    }
-    
-    return true;
-  }
-
-  int
-  port() const {
-    return m_port;
-  }
-
-  std::vector<std::string>
-  indicies() const {
-    return m_indices;
-  }
-
-  std::string
-  file_root() const {
-    return m_root;
-  }
-
-  std::map<std::string, std::string> m_file_types;
-
-private:
-  int m_port;
-  std::string m_root;
-  std::vector<std::string> m_indices;
-} sc;
-
 class http_request {
 public:
-  http_request() {
-    m_root = sc.file_root();
+  http_request(const std::string &root) {
+    m_root = root;
     isValid = true;
   }
 
@@ -317,7 +208,7 @@ CreateRequests(bufferevent *ev, connection_info *ci)
   evbuffer *input = bufferevent_get_input(ev);
 
   std::vector<http_request> requests;
-  http_request req;
+  http_request req(ci->server->file_root());
 
   for (int i = 1; ; ++i)
   {
@@ -396,7 +287,7 @@ CreateRequests(bufferevent *ev, connection_info *ci)
     begin_next:
       //LOG(DEBUG) << "[[" << __LINE__ << "]]: " << "starting new request";
       requests.push_back(req);
-      req = http_request();
+      req = http_request(ci->server->file_root());
       i=0;
       continue;
   }
@@ -449,16 +340,15 @@ MakeSuccessHeader(
 void
 close_connection(connection_info* ci)
 {
-  //LOG(DEBUG) << ci->port_s() << "Closing connection";
   bufferevent_free(ci->bev);
   event_del( ci->timeout_event );
   free(ci);
 }
 
 void
-callback_event(bufferevent *event, short events, void *context)
+callback_event(bufferevent *event, short events, void *conn_info)
 {
-  connection_info* ci = reinterpret_cast<connection_info*>(context);
+  connection_info* ci = reinterpret_cast<connection_info*>(conn_info);
 
   if ( (events & (BEV_EVENT_READING|BEV_EVENT_EOF)) )
   {
@@ -469,25 +359,25 @@ callback_event(bufferevent *event, short events, void *context)
 }
 
 void
-callback_timeout(evutil_socket_t fd, short what, void* context)
+callback_timeout(evutil_socket_t fd, short what, void* conn_info)
 {
-  connection_info* ci = reinterpret_cast<connection_info*>(context);
+  connection_info* ci = reinterpret_cast<connection_info*>(conn_info);
   VLOG(1) << ci->port_s() << "Closing (TIMEOUT)";
   close_connection(ci);
 }
 
 void
-callback_data_written(bufferevent *bev, void *context)
+callback_data_written(bufferevent *bev, void *conn_info)
 {
-  connection_info *ci = reinterpret_cast<connection_info*>(context);
+  connection_info *ci = reinterpret_cast<connection_info*>(conn_info);
   VLOG(1) << ci->port_s() << "Closing (WRITEOUT)";
   close_connection(ci);
 }
 
 void
-callback_read(bufferevent *ev, void *context)
+callback_read(bufferevent *ev, void *conn_info)
 {
-  connection_info* ci = reinterpret_cast<connection_info*>(context);
+  connection_info* ci = reinterpret_cast<connection_info*>(conn_info);
   // First reset the timer on the connection
   event_del( ci->timeout_event );
 
@@ -526,11 +416,11 @@ callback_read(bufferevent *ev, void *context)
       if ( req.uri().compare(URI_ROOT) == 0 )
       {
         VLOG(1) << ci->port_s() << "Client requested the root page";
-        std::vector<std::string> indicies = sc.indicies();
+        std::vector<std::string> index_pages = ci->server->index_pages();
         bool rootFound = false;
-        for (std::vector<std::string>::iterator it = indicies.begin(); it != indicies.end(); ++it)
+        for (std::vector<std::string>::iterator it = index_pages.begin(); it != index_pages.end(); ++it)
         {
-          std::string f(sc.file_root());
+          std::string f(ci->server->file_root());
           f += *it;
 
           VLOG(2) << ci->port_s() << "Root file exists? [" << f << "]";
@@ -577,8 +467,8 @@ callback_read(bufferevent *ev, void *context)
 
       std::string extension = file_extension(req.uri());
       VLOG(2) << ci->port_s() << "Requested extension: " << extension;
-      std::map<std::string, std::string>::iterator f_it = sc.m_file_types.find(extension);
-      if ( f_it == sc.m_file_types.end() )
+
+      if ( !(ci->server->extAllowed(extension)) )
       {
         // file type not allowed by config file
         std::string e = Make501(req.uri());
@@ -589,7 +479,7 @@ callback_read(bufferevent *ev, void *context)
         continue;
       }
 
-      std::string header = MakeSuccessHeader(f_it->second, fd_stat.st_size, req.other_attrs);
+      std::string header = MakeSuccessHeader(ci->server->get_mime(extension), fd_stat.st_size, req.other_attrs);
 
       evbuffer_add(output, header.c_str(), header.length() );
       evbuffer_add_file(output, fd, 0, fd_stat.st_size);
@@ -632,6 +522,14 @@ callback_read(bufferevent *ev, void *context)
 }
 
 
+// all new connections spawn a thread with this was their routine
+void
+thread_listener(connection_info *ci)
+{
+  event_base *base = bufferevent_get_base(ci->bev);
+  event_base_dispatch(base);
+}
+
 void 
 callback_accept_connection(
   evconnlistener *listener,
@@ -641,22 +539,54 @@ callback_accept_connection(
   void *context
   )
 {
-  event_base *base = evconnlistener_get_base(listener);
-  bufferevent *bev = bufferevent_socket_new(base,
+  // event_base *base = evconnlistener_get_base(listener);
+  // bufferevent *bev = bufferevent_socket_new(base,
+  //                                           newSocket,
+  //                                           BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
+
+  // connection_info *ci = new connection_info();
+  // event *e = event_new(base, -1, EV_TIMEOUT, callback_timeout, (void*)ci);
+
+  // ci->port = newSocket;
+  // ci->bev = bev;
+  // ci->timeout_event = e;
+
+  // VLOG(2) << ci->port_s() << "Opened connection.";
+  // bufferevent_setcb(bev, callback_read, NULL, callback_event, (void*)ci);
+  // bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
+  // bufferevent_enable(bev, EV_READ|EV_WRITE);
+
+
+  HTTP_Server *server = reinterpret_cast<HTTP_Server*>(context);
+  event_base *newEventBase = event_base_new();
+  if (!newEventBase)
+  {
+    LOG(WARNING) << "Failed to create new event base for incoming connection.. Using main thread's event base.";
+    newEventBase = evconnlistener_get_base(listener);
+  }
+  bufferevent *bev = bufferevent_socket_new(newEventBase,
                                             newSocket,
-                                            BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
+                                            BEV_OPT_CLOSE_ON_FREE
+                                              |BEV_OPT_THREADSAFE
+                                              |BEV_OPT_DEFER_CALLBACKS);
+
+  if (!bev)
+  {
+    LOG(FATAL) << "couldn't create bufferevent.. ignoring connection";
+    return;
+  }
 
   connection_info *ci = new connection_info();
-  event *e = event_new(base, -1, EV_TIMEOUT, callback_timeout, (void*)ci);
-
+  event *e = event_new(newEventBase, -1, EV_TIMEOUT, callback_timeout, ci);
   ci->port = newSocket;
   ci->bev = bev;
   ci->timeout_event = e;
+  ci->server = server;
 
-  VLOG(2) << ci->port_s() << "Opened connection.";
   bufferevent_setcb(bev, callback_read, NULL, callback_event, (void*)ci);
   bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
   bufferevent_enable(bev, EV_READ|EV_WRITE);
+  std::thread t(thread_listener, ci);
 }
 
 void
@@ -682,18 +612,19 @@ main(const int argc, const char** argv)
   el::Loggers::addFlag( el::LoggingFlag::ColoredTerminalOutput );
   el::Loggers::addFlag( el::LoggingFlag::DisableApplicationAbortOnFatalLog );
 
+  HTTP_Server *server = new HTTP_Server();
 
   std::string confFilePath; // config file can be passed in following "-c" cli option
   if ( cmdOptionExists(argv, argv+argc, "-c") ) confFilePath = getCmdOption( argv, argv+argc, "-c" );
   else confFilePath = "./ws.conf";
 
-  if ( !sc.ParseConfFile(confFilePath) ) {
+  if ( !server->ParseConfFile(confFilePath) ) {
     LOG(FATAL) << "Errors while parsing the configuration file... Exiting";
     return -1;
   }
 
-  event_base *base = event_base_new();
-  if ( !base )
+  event_base *listeningBase = event_base_new();
+  if ( !listeningBase )
   {
     LOG(FATAL) << "Error creating an event loop.. Exiting";
     return -2;
@@ -704,12 +635,12 @@ main(const int argc, const char** argv)
 
   incomingSocket.sin_family = AF_INET;
   incomingSocket.sin_addr.s_addr = 0; // local host
-  incomingSocket.sin_port = htons(sc.port());
+  incomingSocket.sin_port = htons(server->port());
 
   evconnlistener *listener = evconnlistener_new_bind(
-                                     base,
+                                     listeningBase,
                                      callback_accept_connection,
-                                     NULL,
+                                     server,
                                      LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE,
                                      -1,
                                      (sockaddr*)&incomingSocket,
@@ -723,7 +654,7 @@ main(const int argc, const char** argv)
   }
 
   evconnlistener_set_error_cb(listener, callback_accept_error);
-  event_base_dispatch(base);
+  event_base_dispatch(listeningBase);
 
   return 0;
 }
