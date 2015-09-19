@@ -3,10 +3,10 @@
 
 HTTP_Server::HTTP_Server():
     m_index_pages(),
-    m_file_types(),
-    m_mutex_file_types()
+    m_file_types()
+    // m_mutex_file_types(PTHREAD_MUTEX_INITIALIZER)
 {
-
+  pthread_mutex_init(&m_mutex_file_types,NULL);
 }
 
 int
@@ -31,30 +31,30 @@ const std::string
 HTTP_Server::get_mime(const std::string& ext) const
 {
   std::string mime;
-  m_mutex_file_types.lock();
+  pthread_mutex_lock(&m_mutex_file_types);
   file_map::const_iterator f_it = m_file_types.find(ext);
-  m_mutex_file_types.unlock();
+  pthread_mutex_unlock(&m_mutex_file_types);
   return f_it->second;
 }
 
 bool
 HTTP_Server::extAllowed(const std::string& ext) const
 {
-  m_mutex_file_types.lock();
+  pthread_mutex_lock(&m_mutex_file_types);
   file_map::const_iterator f_it = m_file_types.find(ext);
   if (f_it == m_file_types.end())
   {
-    m_mutex_file_types.unlock();
+    pthread_mutex_unlock(&m_mutex_file_types);
     return false;
   }
   else
   {
-    m_mutex_file_types.unlock();
+    pthread_mutex_unlock(&m_mutex_file_types);
     return true;
   }
 }
 
-bool
+bool  
 HTTP_Server::ParseConfFile(const std::string& filename)
 {
   std::ifstream file;

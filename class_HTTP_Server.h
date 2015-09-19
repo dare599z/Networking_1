@@ -1,7 +1,7 @@
 #include <vector>
 #include <string>
 #include <map>
-#include <thread>
+#include <pthread.h>
 #include "easylogging++.h"
 
 typedef std::map<std::string, std::string> file_map;
@@ -27,5 +27,5 @@ private:
   std::vector<std::string> m_index_pages;
   file_map m_file_types;
 
-  mutable std::mutex m_mutex_file_types;
+  mutable pthread_mutex_t m_mutex_file_types;
 };

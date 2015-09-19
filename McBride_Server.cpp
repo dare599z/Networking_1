@@ -2,8 +2,9 @@
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/util.h>
+#include <event2/thread.h>
 
-#include <thread>
+#include <pthread.h>
 
 #include <arpa/inet.h>
 #include <string.h>
@@ -26,6 +27,8 @@
 #include "class_HTTP_Server.h"
 
 #include "easylogging++.h"
+#define ELPP_THREAD_SAFE
+#define ELPP_EXPERIMENTAL_ASYNC
 INITIALIZE_EASYLOGGINGPP
 
 /********************************
@@ -523,11 +526,13 @@ callback_read(bufferevent *ev, void *conn_info)
 
 
 // all new connections spawn a thread with this was their routine
-void
-thread_listener(connection_info *ci)
+void*
+thread_listener(void *conn_info)
 {
+  connection_info *ci = reinterpret_cast<connection_info*>(conn_info);
   event_base *base = bufferevent_get_base(ci->bev);
   event_base_dispatch(base);
+  return NULL;
 }
 
 void 
@@ -586,7 +591,12 @@ callback_accept_connection(
   bufferevent_setcb(bev, callback_read, NULL, callback_event, (void*)ci);
   bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
   bufferevent_enable(bev, EV_READ|EV_WRITE);
-  std::thread t(thread_listener, ci);
+  pthread_t pt;
+  pthread_create(&pt,
+                 NULL,
+                 &thread_listener,
+                 (void*)ci
+                 );
 }
 
 void
@@ -602,6 +612,7 @@ callback_accept_error(struct evconnlistener *listener, void *ctx)
 int
 main(const int argc, const char** argv)
 {
+  LOG(WARNING) << __LINE__;
   // start the easylogging++.h library
   START_EASYLOGGINGPP(argc, argv); 
   el::Configurations conf;
@@ -611,18 +622,23 @@ main(const int argc, const char** argv)
   conf.clear();
   el::Loggers::addFlag( el::LoggingFlag::ColoredTerminalOutput );
   el::Loggers::addFlag( el::LoggingFlag::DisableApplicationAbortOnFatalLog );
-
+LOG(WARNING) << __LINE__;
   HTTP_Server *server = new HTTP_Server();
-
+LOG(WARNING) << __LINE__;
   std::string confFilePath; // config file can be passed in following "-c" cli option
   if ( cmdOptionExists(argv, argv+argc, "-c") ) confFilePath = getCmdOption( argv, argv+argc, "-c" );
   else confFilePath = "./ws.conf";
-
+LOG(WARNING) << __LINE__;
   if ( !server->ParseConfFile(confFilePath) ) {
     LOG(FATAL) << "Errors while parsing the configuration file... Exiting";
     return -1;
   }
-
+LOG(WARNING) << __LINE__;
+  if ( evthread_use_pthreads() )
+  {
+    LOG(FATAL) << "couldn't start libevent with pthreads..";
+    return -1;
+  }
   event_base *listeningBase = event_base_new();
   if ( !listeningBase )
   {
