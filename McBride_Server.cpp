@@ -25,6 +25,7 @@
 INITIALIZE_EASYLOGGINGPP
 
 #define NDEBUG
+#undef _DEBUG
 
 /********************************
 *
@@ -70,7 +71,7 @@ std::string Make501(const std::string &file)
 /********************************
 *
 *
-* Structures
+* Structures and classes
 *
 *
 ********************************/
@@ -384,7 +385,7 @@ CreateRequests(bufferevent *ev, connection_info *ci)
       if (b)
       {
         req.other_attrs.insert(pair);
-        VLOG(3) << ci->port_s() << "<" << pair.first << "> , <" << pair.second << ">";
+        VLOG(3) << ci->port_s() << "req.other_attrs[" << pair.first << "]= " << pair.second;
       }
       continue;
     }
@@ -393,7 +394,7 @@ CreateRequests(bufferevent *ev, connection_info *ci)
     // This begin_next goto statement happens when a request is followed
     // up with a blankline
     begin_next:
-      LOG(DEBUG) << "[[" << __LINE__ << "]]: " << "starting new request";
+      //LOG(DEBUG) << "[[" << __LINE__ << "]]: " << "starting new request";
       requests.push_back(req);
       req = http_request();
       i=0;
@@ -448,7 +449,7 @@ MakeSuccessHeader(
 void
 close_connection(connection_info* ci)
 {
-  LOG(DEBUG) << ci->port_s() << "Closing connection";
+  //LOG(DEBUG) << ci->port_s() << "Closing connection";
   bufferevent_free(ci->bev);
   event_del( ci->timeout_event );
   free(ci);
@@ -459,9 +460,9 @@ callback_event(bufferevent *event, short events, void *context)
 {
   connection_info* ci = reinterpret_cast<connection_info*>(context);
 
-  if ( (events & BEV_EVENT_EOF) )
+  if ( (events & (BEV_EVENT_READING|BEV_EVENT_EOF)) )
   {
-    LOG(WARNING) << ci->port_s() << "Closing (CLIENT EOF)";
+    VLOG(1) << ci->port_s() << "Closing (CLIENT EOF)";
     close_connection(ci);
     return;
   }
@@ -502,11 +503,11 @@ callback_read(bufferevent *ev, void *context)
 
   std::vector<http_request> requests = CreateRequests(ev, ci);
 
-  LOG(DEBUG) << "number of requests to service= " << requests.size();
+  //LOG(DEBUG) << "number of requests to service= " << requests.size();
   
   for ( auto it = requests.begin(); it != requests.end(); ++it )
   {
-    LOG(DEBUG) << "Servicing request.. ";
+    //LOG(DEBUG) << "Servicing request.. ";
     http_request &req = *it;
 
     if ( !req.isValid ) {
@@ -558,6 +559,7 @@ callback_read(bufferevent *ev, void *context)
           std::string e = Make404(req.uri());
           LOG(WARNING) << ci->port_s() << "<404>: " << req.uri();
           bufferevent_write( ev, e.c_str(), e.length() );
+          if ( req.keepAlive() ) keepAlive = true;
           continue;
         }
       }

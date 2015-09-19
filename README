@@ -41,6 +41,9 @@ RUNNING
 -------
 http_server_mcbride [-c config_file] [-v] [--v={1-9}]
 
+With the -c option, you can specify the path to the configuration file.
+Without it, it defaults to './ws.conf'
+
 The verbosity level of logs is selectable with the v command
 options above. 
 
