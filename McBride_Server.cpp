@@ -26,9 +26,8 @@
 
 #include "class_HTTP_Server.h"
 
-#include "easylogging++.h"
 #define ELPP_THREAD_SAFE
-#define ELPP_EXPERIMENTAL_ASYNC
+#include "easylogging++.h"
 INITIALIZE_EASYLOGGINGPP
 
 /********************************
@@ -47,7 +46,7 @@ std::string Make400(const std::string &problem, const std::string &req)
   std::string es("HTTP/1.1 400 Bad Request: ");
   es += problem;
   es += req;
-  es += "\n";
+  es += "\n\n";
   return es;
 }
 
@@ -55,7 +54,7 @@ std::string Make404(const std::string &file)
 {
   std::string es("HTTP/1.1 404 Not Found: ");
   es += file;
-  es += "\n";
+  es += "\n\n";
   return es;
 }
 
@@ -68,7 +67,7 @@ std::string Make501(const std::string &file)
 {
   std::string es("HTTP/1.1 501 Not Implemented: ");
   es += file;
-  es += "\n";
+  es += "\n\n";
   return es;
 }
 
@@ -345,7 +344,8 @@ close_connection(connection_info* ci)
 {
   bufferevent_free(ci->bev);
   event_del( ci->timeout_event );
-  free(ci);
+  // event_base_loopexit(ci-> )
+  // free(ci);
 }
 
 void
@@ -380,6 +380,7 @@ callback_data_written(bufferevent *bev, void *conn_info)
 void
 callback_read(bufferevent *ev, void *conn_info)
 {
+  // LOG(ERROR) << __PRETTY_FUNCTION__;
   connection_info* ci = reinterpret_cast<connection_info*>(conn_info);
   // First reset the timer on the connection
   event_del( ci->timeout_event );
@@ -443,6 +444,7 @@ callback_read(bufferevent *ev, void *conn_info)
           LOG(WARNING) << ci->port_s() << "<404>: " << req.uri();
           bufferevent_write( ev, e.c_str(), e.length() );
           if ( req.keepAlive() ) keepAlive = true;
+          keepAlive = false;
           continue;
         }
       }
@@ -451,8 +453,10 @@ callback_read(bufferevent *ev, void *conn_info)
         if ( !file_exists(req.full_uri()) ) {
           std::string e = Make404(req.uri());
           LOG(WARNING) << ci->port_s() << "<404>: " << req.uri();
-          bufferevent_write( ev, e.c_str(), e.length() );
-          if ( req.keepAlive() ) keepAlive = true;
+          // bufferevent_write( ev, e.c_str(), e.length() );
+          evbuffer_add( output, e.c_str(), e.length() );
+          // if ( req.keepAlive() ) keepAlive = true;
+          // keepAlive = false;
           continue;
         }
       }
@@ -529,9 +533,16 @@ callback_read(bufferevent *ev, void *conn_info)
 void*
 thread_listener(void *conn_info)
 {
+  pthread_t   tid;
+  tid = pthread_self();
   connection_info *ci = reinterpret_cast<connection_info*>(conn_info);
+  LOG(WARNING) << "Thread " << tid << " conn " << ci->port;
+  // LOG(WARNING) << "In thread " << ci->port;
+  bufferevent_enable(ci->bev, EV_READ|EV_WRITE);
   event_base *base = bufferevent_get_base(ci->bev);
+  event_reinit(base);
   event_base_dispatch(base);
+  VLOG(1) << ci->port_s() << "Thread killed";
   return NULL;
 }
 
@@ -544,24 +555,7 @@ callback_accept_connection(
   void *context
   )
 {
-  // event_base *base = evconnlistener_get_base(listener);
-  // bufferevent *bev = bufferevent_socket_new(base,
-  //                                           newSocket,
-  //                                           BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
-
-  // connection_info *ci = new connection_info();
-  // event *e = event_new(base, -1, EV_TIMEOUT, callback_timeout, (void*)ci);
-
-  // ci->port = newSocket;
-  // ci->bev = bev;
-  // ci->timeout_event = e;
-
-  // VLOG(2) << ci->port_s() << "Opened connection.";
-  // bufferevent_setcb(bev, callback_read, NULL, callback_event, (void*)ci);
-  // bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
-  // bufferevent_enable(bev, EV_READ|EV_WRITE);
-
-
+  // LOG(ERROR) << __PRETTY_FUNCTION__;
   HTTP_Server *server = reinterpret_cast<HTTP_Server*>(context);
   event_base *newEventBase = event_base_new();
   if (!newEventBase)
@@ -571,9 +565,7 @@ callback_accept_connection(
   }
   bufferevent *bev = bufferevent_socket_new(newEventBase,
                                             newSocket,
-                                            BEV_OPT_CLOSE_ON_FREE
-                                              |BEV_OPT_THREADSAFE
-                                              |BEV_OPT_DEFER_CALLBACKS);
+                                            BEV_OPT_CLOSE_ON_FREE);
 
   if (!bev)
   {
@@ -583,6 +575,7 @@ callback_accept_connection(
 
   connection_info *ci = new connection_info();
   event *e = event_new(newEventBase, -1, EV_TIMEOUT, callback_timeout, ci);
+
   ci->port = newSocket;
   ci->bev = bev;
   ci->timeout_event = e;
@@ -590,7 +583,8 @@ callback_accept_connection(
 
   bufferevent_setcb(bev, callback_read, NULL, callback_event, (void*)ci);
   bufferevent_setwatermark(bev, EV_WRITE, 0, 0);
-  bufferevent_enable(bev, EV_READ|EV_WRITE);
+  
+  // LOG(WARNING) << "Accepting connection on " << newSocket;
   pthread_t pt;
   pthread_create(&pt,
                  NULL,
@@ -612,7 +606,6 @@ callback_accept_error(struct evconnlistener *listener, void *ctx)
 int
 main(const int argc, const char** argv)
 {
-  LOG(WARNING) << __LINE__;
   // start the easylogging++.h library
   START_EASYLOGGINGPP(argc, argv); 
   el::Configurations conf;
@@ -622,23 +615,23 @@ main(const int argc, const char** argv)
   conf.clear();
   el::Loggers::addFlag( el::LoggingFlag::ColoredTerminalOutput );
   el::Loggers::addFlag( el::LoggingFlag::DisableApplicationAbortOnFatalLog );
-LOG(WARNING) << __LINE__;
   HTTP_Server *server = new HTTP_Server();
-LOG(WARNING) << __LINE__;
   std::string confFilePath; // config file can be passed in following "-c" cli option
+
   if ( cmdOptionExists(argv, argv+argc, "-c") ) confFilePath = getCmdOption( argv, argv+argc, "-c" );
   else confFilePath = "./ws.conf";
-LOG(WARNING) << __LINE__;
+
   if ( !server->ParseConfFile(confFilePath) ) {
     LOG(FATAL) << "Errors while parsing the configuration file... Exiting";
     return -1;
   }
-LOG(WARNING) << __LINE__;
-  if ( evthread_use_pthreads() )
-  {
-    LOG(FATAL) << "couldn't start libevent with pthreads..";
-    return -1;
-  }
+
+  // if ( evthread_use_pthreads() )
+  // {
+  //   LOG(FATAL) << "couldn't start libevent with pthreads..";
+  //   return -1;
+  // }
+
   event_base *listeningBase = event_base_new();
   if ( !listeningBase )
   {
@@ -657,7 +650,7 @@ LOG(WARNING) << __LINE__;
                                      listeningBase,
                                      callback_accept_connection,
                                      server,
-                                     LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE,
+                                     LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE  ,
                                      -1,
                                      (sockaddr*)&incomingSocket,
                                      sizeof incomingSocket

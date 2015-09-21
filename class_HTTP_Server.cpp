@@ -4,7 +4,6 @@
 HTTP_Server::HTTP_Server():
     m_index_pages(),
     m_file_types()
-    // m_mutex_file_types(PTHREAD_MUTEX_INITIALIZER)
 {
   pthread_mutex_init(&m_mutex_file_types,NULL);
 }
